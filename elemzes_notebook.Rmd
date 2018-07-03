@@ -1,0 +1,551 @@
+---
+title: "A NYSE S&P 500 cégeinek bemutatása és az árak alakulásának illetve a fundamentális adatainak az elemzése"
+output: html_notebook
+---
+
+
+  Az S&P 500 egy tozsdei index, amely az 500 legnagyobb olyan vállalat részvényárfolyamából képez egy kompozitot, amelynek részvényei megtalálhatók a NYSE(New York Stock Exchange) vagy a NASDAQ kínálatában.
+A notebook segítségével kívánom bemutatni, hogy az elérheto adatok alapján hogyan alakult a cégek és egyes iparágak helyzete az elmúlt idoszakban.
+
+  Az változások és adatok megfelelo szemléltetéséhez szükség lesz a rendelkezésre álló adathalmaz megtisztítására, és struktúráltá tételére.
+  
+
+A vizsgálat során szükséges könyvtárak betöltése:
+```{r}
+library(tidyverse)
+library(corrplot)
+library(GGally)
+library(plotly)
+library(quantmod)
+library(ggmap)
+library(maps)
+library(mapdata)
+#devtools::install_github("renkun-ken/formattable")
+library(formattable)
+library(stringr)
+```
+
+
+
+Néhány a késobbiekben hasznos helper function definiálása:
+  - az oszlopnevekbol a " " eltüntetése és "_"-re való cseréje 
+```{r}
+tide_name <- function(df) {
+  names(df) <- gsub(x = names(df),pattern = "\\ ",replacement = "_")
+  return(df)
+}
+```
+
+
+  - egy oszlopban lévo szavak elso betujének naggyá tétele:
+```{r}
+firstup <- function(x) {
+    substr(x, 1, 1) <- toupper(substr(x, 1, 1))
+    x
+}
+```
+
+
+
+A legfontosabb adatok betöltése:
+  - kötvényekkel kapcsolatos információk
+  - részvények árai split után
+  - fundamentális adatok
+```{r}
+securities <- tide_name(read_csv("securities.csv"))
+prices <- read_csv("prices-split-adjusted.csv")
+fundamentals <- tide_name(read_csv("fundamentals.csv"))
+```
+
+
+
+Vizsgáljuk meg miyen szektork vannak, és azokba hány cég tartozik:
+```{r}
+sectors <- securities %>% 
+            select(GICS_Sector) %>%
+            count(GICS_Sector)
+
+(sectors)
+```
+
+
+
+Majd a fenti információt ábrázoljuk egy hisztogram segítségével is, a jobb átláthatóság kedvéért:
+```{r}
+p_sectors <- ggplot(sectors) +
+  geom_bar(mapping = aes(x = GICS_Sector,
+                         y= n,
+                         fill = GICS_Sector,
+                         text = paste("Szektor: ", GICS_Sector, "\nCégek száma: ", n)),
+           stat = "identity") +
+  labs(title = "Cégek szektoronkénti száma", y = "A cégek száma az egyes szektorokban\n") +
+  labs(fill='Szektorok neve (angolul)') +
+  theme(axis.title.x = element_blank(),
+        axis.text.x = element_blank(),
+        axis.ticks.x = element_blank()) + 
+  theme(plot.margin=unit(c(1,1,1,1),"cm"))
+
+ggplotly(p_sectors, tooltip = "text")
+```
+
+
+
+Érdemes megtudni azt is, hogy az USA-n belül, mivel a cégek nagy része amerikai, az ország mely államaiban találhatóak.
+
+Elso lépésként betöltjük az USA államainak térképét:
+```{r}
+states <- map_data('state')
+(states)
+```
+
+
+Egy listába gyujtjük a szárazfüldi államok neveit, majd a kezdobetuket upper case-é alakítjuk:
+```{r}
+mainland_states <- unique(states[, 5])
+mainland_states_up <- firstup(mainland_states)
+(mainland_states_up)
+```
+
+
+
+A cégek kötvényeivel kapcsolatos adatain belül kialakítunk egy "states" nevu oszlopot, amelyben a cégek központjainak otthont adó államot tároljuk: 
+```{r}
+states_securities <- securities %>%
+                      mutate(states = strsplit(Address_of_Headquarters, ", ")) %>%
+                      mutate(states = lapply(states, `[[`, 2)) %>%
+                      mutate(states = str_to_lower(states)) %>%
+                      filter(states %in% mainland_states)
+
+(states_securities)
+```
+
+
+
+Ezután minden szárazföldi államnál (mainland states) megállapítjuk, hogy hány cég központja található az adott államban:
+```{r}
+comp_per_states <- states_securities %>%
+                      group_by(states) %>%
+                      count(states)
+colnames(comp_per_states) = c("region", "comp_n")
+
+(comp_per_states)
+```
+
+
+
+
+Az államok koordinátáid és térképi leíró adataihoz hozzzákapcsoljuk "left join" kapcsolással a cégek számát, és nagybetusség tesszük az itt található államneveket:
+```{r}
+states <- left_join(states, comp_per_states, by = c("region"))
+states$comp_n[is.na(states$comp_n)] <- 0
+
+states$region <- firstup(states$region)
+
+(states)
+```
+
+
+
+Az államonkénti cégszámok megjelenítése térkép segítségével:
+```{r}
+ditch_the_axes <- theme(
+  axis.text = element_blank(),
+  axis.line = element_blank(),
+  axis.ticks = element_blank(),
+  panel.border = element_blank(),
+  panel.grid = element_blank(),
+  axis.title = element_blank()
+)
+
+
+g <- ggplot(data = states) + 
+  geom_polygon(aes(x = long, y = lat, fill = comp_n, group = group, text = paste("Állam neve: ", region,
+                                              "<br>", "Cégek száma: ", comp_n))) + 
+  labs(title = 'Cégek száma államonként') +
+  labs(fill = 'Cégek száma') +
+  coord_fixed(1.3) +
+  scale_fill_gradient(low='#a99ffc', high='#9e1906') +
+  ditch_the_axes
+
+ggplotly(g, tooltip = "text")
+```
+Amint az a fenti térképrol leolvasható, az ország legtöbb nagy cégét adó államok California és New York állam.
+További üzleti központoknak tekinthetok még Texas és Illinois állam.
+
+
+
+Vizsgáljuk meg azt is, hogy általában hány éve vonultak tozsdére a cégek, ugyanis csak nagyon kevés cég az, amelyik huzamosabb ideig jelen tud lenni a tozsdén.
+
+Sajnos jópár cégre vonatkozóan nincs ilyen adatunk, de amelyekre van, azoknál egy külön oszlopot hozunk létre, és a futtatás pillanatától mért idotol tekintünk vissza, és számoljuk ki a tozsdén eltöltött éveik számát, majd csökkeno sorrendbe rendezzük oket az évek száma alapján:
+```{r}
+first_appeared <- securities %>%
+                    filter(!is.na(Date_first_added)) %>%
+                    mutate(how_old_year = 2018 - as.numeric((Sys.Date() - as.Date(Date_first_added))/365)) %>%
+                    mutate(how_old = as.numeric((Sys.Date() - as.Date(Date_first_added))/365)) %>%
+                    mutate(how_old_year = formattable(how_old_year, digits = 0, format = "f")) %>%
+                    mutate(how_old = formattable(how_old, digits = 2, format = "f")) %>%
+                    arrange(how_old_year)
+```
+
+
+
+Az 20 legidosebb cég nagyrészt az egészségügy és gyógyszergyártás, továbbá a nehézipar területérol kerül ki:
+```{r}
+head(first_appeared, 20)
+```
+
+
+És a 20 legfiatalabb esetében is ugyanez figyelheto meg:
+```{r}
+tail(first_appeared, 20)
+```
+
+
+
+És egy grafikonon az idobeli eloszlásokat nézve a következot kapjuk:
+```{r}
+
+first_appeared_compn <- first_appeared %>%
+                          count(factor(how_old_year))
+
+
+colnames(first_appeared_compn) = c("how_old_year", "comp_n")
+
+
+apperances <- first_appeared_compn$comp_n
+
+
+ditch_the_axes <- theme(
+  axis.text = element_blank(),
+  axis.line = element_blank(),
+  axis.ticks = element_blank(),
+  panel.border = element_blank(),
+  panel.grid = element_blank()
+)
+
+
+g_how_old <- ggplot() +
+                geom_bar(data = first_appeared_compn, aes(how_old_year, comp_n, 
+                            text = paste('Évszám: ', how_old_year, '\nCégek száma: ', comp_n),
+                            fill = comp_n), stat = 'identity') +
+                ditch_the_axes +
+                scale_y_continuous(name = "A cégek száma") +
+                ggtitle("Frequency histogram of mean ozone") +
+                scale_fill_gradient("A cégek száma \naz adott évben", low = "blue", high = "red") +
+                labs(title = 'Cégek tozsdére vonulása évente', x = 'Évek',y = 'Cégek száma')
+
+ggplotly(g_how_old, tooltip = 'text')
+```
+Mint az a grafikonon is látható a cégek ciklikusan maradnak fenn, és lépnek tozsdére. Jelenleg nagyon sok a frissen tozsdére lépett cég, amely cégek nagy valószínuséggel a következo válság során elhagyják azt. Jelenleg nagyon sok a túlértékelt cég, mint ahogy a 90'-es évek végén is sok volt. Mégis csupán egy pár datab cég maradt csak meg az akkori tozsdére lépok közül (pl. Google, Yahoo).
+
+
+
+
+A tozsdén található leghíresebb, legnagyobb és piacvezeto cégeket Blue-Chippeknek nevezik. A következo részben vizsgáljuk meg ezek árfolyamainak és fundamentumainak az alakulását.
+A Blue-Chippek meghatározásánál a teljes bevételt vettem alapul, és hogy még kordában tartható legyen az adatthalmaz nagysága a grafikonok ábrázolása során, ezért csak a 130 milliárd dollár feletti átlagbevételu cégeket vezzetm számításba.
+11 ilyen cég van.
+```{r}
+bluechips <- fundamentals %>%
+              group_by(Ticker_Symbol) %>%
+              summarize(Total_Revenue_Mean = mean(Total_Revenue)) %>%
+              filter(Total_Revenue_Mean>130000000000) %>%
+              arrange(desc(Total_Revenue_Mean))
+
+(bluechips)
+```
+
+
+Ezután egy vektorba kinyerjük a szimbólumaikat:
+```{r}
+bluechips_symbols <- c(bluechips$Ticker_Symbol)
+
+(bluechips_symbols)
+```
+
+
+
+Nyerjük ki a cégek teljes nevét, mivel a tickereket nagy részét csak a benfentesek ismerik:
+```{r}
+bluechip_names <- securities %>%
+                  filter(Ticker_symbol %in% bluechips_symbols) %>%
+                  select(Ticker_symbol, Security)
+
+(bluechip_names)
+```
+
+
+
+Ezen a ponton fontos kialakítani egy helper functiont, ami segít majd az inputként beadott tickerek alapján megtalálni az adott tickerhez tartozó cégeket, és visszatér egy rendezett dataframe-el:
+```{r}
+
+get_Companies_by_Tickers <- function(ticker_list, comp_names) {
+   return (prices %>% 
+                    group_by(symbol) %>%
+                    arrange(symbol) %>%
+                    filter(match(symbol,ticker_list)>0) %>%
+                    filter(as.Date(date) > as.Date("2012-01-01") & as.Date(date) <= as.Date("2015-12-31")) %>%
+                    mutate(name = comp_names$Security[match(symbol, comp_names$Ticker_symbol)]) %>%
+                    mutate(change = (close-close[1])) %>%
+                    mutate(open = as.double(format(round(open, 2), nsmall = 2)),
+                           close = as.double(format(round(close, 2), nsmall = 2)),
+                           low = as.double(format(round(low, 2), nsmall = 2)),
+                           high = as.double(format(round(high, 2), nsmall = 2)),
+                           change = as.double(format(round(change, 2), nsmall = 2))))
+}
+```
+
+
+
+
+
+
+Majd a hozzájuk tartozó historikus napi adatokat egy 4 éves idoszakot tekintve, amely azért megfeleo számunkra, mert ebben az idointervallumban az összes cégrol vannak napi adataink:
+```{r}
+
+bluechips_prices <- get_Companies_by_Tickers(bluechips_symbols, bluechip_names)
+  
+
+(bluechips_prices)
+```
+
+
+
+
+Definiálunk egy helper functiont a tooltipek megfelelo ábrázolásához:
+```{r}
+tooltip_text <- function(x) {
+  return (paste('Cég neve: \n', x$name,
+                                       '\nÁrfolyam változása: ', x$change, ' %',
+                                       '\nNyitási ár: ', x$open, ' $',
+                                       '\nZárási ár: ', x$close, ' $',
+                                       '\nNapi csúcs: ', x$high, ' $',
+                                       '\nNapi mélység: ',x$low, ' $',
+                                       '\nForgalom: ', x$volume, ' db',
+                                       '\nDátum: ', x$date))
+}
+```
+
+
+A fent említett idoszakra nézzük meg, hogyhogyan teljesítettek az Blue-Chippek a tozsdén:
+```{r}
+ditch_the_axes <- theme(
+  panel.border = element_blank()
+)
+
+
+p <- ggplot(bluechips_prices, aes(date, change,
+                                  text = tooltip_text(bluechips_prices))) +
+  geom_line(mapping = aes(color = factor(name), group = 1)) + 
+  ditch_the_axes + 
+  labs(title = 'A Blue-Chippek árfolyamának alakulása 2012. jan. 1.-e és 2015. dec. 31. között',
+       x = 'Évek',
+       y = '2012. jan. 1.-tol számított változás [ % ]',
+       color = 'Cégek') +
+  theme(plot.margin=unit(c(1,0.5,0.5,0.5),"cm"))
+
+ggplotly(p, tooltip = 'text')
+```
+Látható, hogy a legnagyobb piaci árbevételu cégek árfolyama növekedett ebben a 4 éves idoszakban. Az abszolút nyertese ennek az idoszaknak a McKesson nevu egészségügyi cég, amelynek az árfolyama 121.55%-os pluszban zárt 2015. dec. 31.-én a 2012 év elejei árához képest.
+
+
+
+
+
+
+
+
+A következokben az úgynevezett Large Cap-eket és Small Cap-eket vizsgáljuk meg.
+A Large Caps (Largest Capitalization - Legnagyobb Piaci kapitalizációjú) cégek nagy átfedést mutatnak a Blue Chippekkel, azonban most nem a bevételeket, hanem a pénzügyi eszközeiket.
+
+A 10 legnagyobb piaci kapitalizációjú cég kiválasztása a pénzügyi eszközeik éves átlagai alapján:
+```{r}
+largest_caps <- fundamentals %>%
+                    group_by(Ticker_Symbol) %>%
+                    summarise(Total_Assets = mean(Total_Assets)) %>%
+                    arrange(desc(Total_Assets))
+largest_caps <- largest_caps[1:10,]
+
+(largest_caps)
+```
+
+
+Ezen cégek tickereinek kiválasztása:
+```{r}
+largest_caps_symbols <- c(largest_caps$Ticker_Symbol)
+(largest_caps_symbols)
+```
+
+
+A cégek teljes nevének a kiválasztása a tickerek alapján:
+```{r}
+largest_caps_names <- securities %>%
+                  filter(Ticker_symbol %in% largest_caps_symbols) %>%
+                  select(Ticker_symbol, Security)
+
+(largest_caps_names)
+```
+
+
+
+```{r}
+largest_caps <- get_Companies_by_Tickers(largest_caps_symbols, largest_caps_names)
+
+p_largest_cap <- ggplot(largest_caps, aes(date, change, text = tooltip_text(largest_caps))) +
+          geom_line(mapping = aes(color = factor(name), group = 1)) +
+          ditch_the_axes + 
+          labs(title = 'A Large Cap-ek árfolyamának alakulása 2012. jan. 1.-e és 2015. dec. 31. között',
+               x = 'Évek',
+               y = '2012. jan. 1.-tol számított változás [ % ]',
+               color = 'Cégek') +
+          theme(plot.margin=unit(c(1,0.5,0.5,0.5),"cm"))
+
+ggplotly(p_largest_cap, tooltip ='text')
+```
+Egy érdekes dolgot figyelhetünk meg a grafikonon, ugyanis a 10 kiválasztott cégbol 8 árfolyama szinte megegyezo mozgásokat írt le a vizsgált idoszakban, csupán kis eltérés tapasztalható közöttük. Tehát akár az is kijelentheto, hogy a cégek árfolyamváltozása sokkal inkább függ a piaci viszonyoktól, mint magának a cégnek a teljesítményétol.
+
+
+
+
+
+Most nézzük a 10 legkisebb kapitalizációjú olyan céget:
+```{r}
+smallest_caps <- fundamentals %>%
+                  group_by(Ticker_Symbol) %>%
+                  summarise(Total_Assets = mean(Total_Assets)) %>%
+                  arrange(Total_Assets)
+smallest_caps <- smallest_caps[1:12,]
+
+(smallest_caps)
+```
+
+
+
+A tickerek:
+```{r}
+smallest_caps_symbols <- c(smallest_caps$Ticker_Symbol)
+
+(smallest_caps_symbols)
+```
+
+
+A nevek:
+```{r}
+smallest_caps_names <- securities %>%
+                  filter(Ticker_symbol %in% smallest_caps_symbols) %>%
+                  select(Ticker_symbol, Security)
+
+(smallest_caps_names)
+```
+Mivel az "UA" és az "UAA" ticker tulajdonosa ugyanaz a cég, ezért nagy valószínuséggel az adott idoszakban megváltoztatták a cég tozsdei szimbólumát.
+
+
+
+
+
+Ezen cégek árfolyamainak alakulása grafikonon ábrázolva (a tickerváltoztatás miatt itt már csak 9 cég szerepel, hogy ezt ellensúlyozzuk, fent módosítom a kiválasztást, hog ne a 10 legkisebb, hanem 11 legkisebb kitettségu céget válassza ki a cégek halmazából):
+```{r}
+smallest_caps_symbols <- smallest_caps_symbols[!(smallest_caps_symbols %in% c("UA","UAA"))]
+smallest_caps_names <- smallest_caps_names %>%
+                          filter(Ticker_symbol %in% smallest_caps_symbols)
+
+smallest_caps <- get_Companies_by_Tickers(smallest_caps_symbols, smallest_caps_names)
+
+p_smallest_cap <- ggplot(smallest_caps, aes(date, change, text = tooltip_text(smallest_caps))) +
+        geom_line(mapping = aes(color = factor(smallest_caps$name), group = 1)) +
+        ditch_the_axes + 
+        labs(title = 'A Small Cap-ek árfolyamának alakulása 2012. jan. 1.-e és 2015. dec. 31. között',
+               x = 'Évek',
+               y = '2012. jan. 1.-tol számított változás [ % ]',
+               color = 'Cégek') +
+        theme(plot.margin=unit(c(1,0.5,0.5,0.5),"cm"))
+                    
+
+ggplotly(p_smallest_cap, tooltip = 'text')
+```
+A fenti grafikonról kiolvasható, hogy a kisebb cégek esetében nem a piaci hangulat, hanem inkább a saját teljesítményük az, ami befolyásolja az árfolyamukat.
+
+
+
+
+Vajon ha kialakítunk egy kisebb részvénycsomagot, akkor a Large Cap-ekbe vagy a Small Cap-ekbe érdemes tennünk a pénünket?
+```{r}
+largest_caps_mean <- largest_caps %>%
+                      group_by(date) %>%
+                      summarize(change = mean(change))
+
+
+smallest_caps_mean <- smallest_caps %>%
+                        group_by(date) %>%
+                        summarize(change = mean(change))
+
+
+S_and_P500 <- prices %>% 
+                    group_by(symbol) %>%
+                    arrange(symbol) %>%
+                    filter(as.Date(date) > as.Date("2012-01-01") & as.Date(date) <= as.Date("2015-12-31")) %>%
+                    mutate(change = (close-close[1])) %>%
+                    mutate(open = as.double(format(round(open, 2), nsmall = 2)),
+                           close = as.double(format(round(close, 2), nsmall = 2)),
+                           low = as.double(format(round(low, 2), nsmall = 2)),
+                           high = as.double(format(round(high, 2), nsmall = 2)),
+                           change = as.double(format(round(change, 2), nsmall = 2)))
+
+S_and_P500_mean <- S_and_P500 %>%
+                        group_by(date) %>%
+                        summarize(change = mean(as.double(format(round(change, 2), nsmall = 2))))
+
+
+
+tooltip_text_indices <- function(ind_Name, x) {
+  return (paste('Index neve: ', ind_Name,
+                              '\nÁrfolyam változása: ', as.double(format(round(x$change, 2), nsmall = 2)), ' %',
+                              '\nDátum: ', x$date))
+}
+
+
+indices <- ggplot() +
+  geom_line(data = largest_caps_mean, aes(date,
+                                  change,
+                                  colour = "#f90a0a",
+                                  text = tooltip_text_indices("Largest Caps", largest_caps_mean),
+                                  group = 1), show.legend = FALSE) +
+  geom_line(data = smallest_caps_mean, aes(date,
+                                  change,
+                                  colour = "#22d012",
+                                  text = tooltip_text_indices("Smallest Caps", smallest_caps_mean),
+                                  group = 1),show.legend = FALSE) +
+  geom_line(data = S_and_P500_mean, aes(date,
+                                  change,
+                                  colour = "#1d2bec",
+                                  text = tooltip_text_indices("S&P500", S_and_P500_mean), 
+                                  group = 1), show.legend = FALSE) +
+  theme(legend.position="none") +
+  labs(title = 'Részvénycsomagok összehasonlítása',
+       x = 'Évek',
+       y = '2012. jan. 1.-tol számított változás [ % ]') +
+  theme(plot.margin=unit(c(1,0.5,0.5,0.5),"cm"))
+
+ggplotly(indices, tooltip = 'text')
+```
+Úgy tunik, hogy az összes céget alapul vevo S&P500 index túlteljesítette mind a nagy, mind a kis kapitalizációjú cégek árfolyamváltozásait.
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
